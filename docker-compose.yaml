@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  n8n:
+    build: .
+    container_name: vericlaim_n8n
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - NODE_ENV=production
+      - PYTHON_EXECUTABLE=/usr/bin/python3
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+volumes:
+  n8n_data:

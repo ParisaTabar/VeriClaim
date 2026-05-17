@@ -1,0 +1,22 @@
+# Containers & Docker logs
+.docker/
+*.log
+docker-compose.override.yml
+
+# Databases & Volumes
+/postgres_data/
+/n8n_data/
+.env
+
+# Python & Environment
+__pycache__/
+*.pyc
+.venv/
+env/
+venv/
+.pytest_cache/
+
+# OS/IDE Files
+.DS_Store
+.vscode/
+.idea/
