@@ -1,0 +1,279 @@
+{
+  "name": "VeriClaim Academic Pipeline v0.1",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://api.openalex.org/works",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filter",
+              "value": "=title.search:{{ $json.text }} "
+            },
+            {
+              "name": "per_page",
+              "value": "5"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "mailto:your.email@example.com"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        240
+      ],
+      "id": "a81d9b6f-9204-4218-ad96-ae1c401ab641",
+      "name": "openalex Api"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=You are an expert scientific validator. Analyze the academic metadata and abstract to evaluate its scientific soundness.\n\nRules:\n1. \"core_claim\": Extract the main finding or hypothesis in a single sentence (max 20 words). If the abstract is missing, output \"N/A\".\n2. \"category\": Classify into exactly one: [\"Methodology\", \"Empirical\", \"Review\", \"Theory\", \"N/A\"].\n3. \"verdict\": Based on the abstract's strength, provide exactly one verdict matching this enum: \n   - 'supported': If findings are conclusive, peer-reviewed, and strongly proven.\n   - 'mixed': If results are preliminary, ambiguous, or show conflicting data.\n   - 'refuted': If the paper directly disproves a major hypothesis or encounters failure.\n   - 'insufficient_evidence': If the abstract is missing, too short, or N/A.\n4. \"verdict_summary\": A brief 1-sentence rationale (max 15 words) justifying your verdict.\n5. \"extraction_confidence\": A float between 0.00 and 1.00 representing the epistemic certainty of the claim's language (e.g., 1.00 for absolute definitive proof/verification, 0.40 for speculative/preliminary hedging phrases like \"might suggest\").\n\nOutput ONLY a valid, raw JSON object. NO markdown formatting, NO backticks.\n\nInput Data:\nTitle: {{ $json.Title }}\nKeywords: {{ $json.Keywords }}\nAbstract: {{ $json.Abstract }}"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        80,
+        240
+      ],
+      "id": "1afaf4ca-85b0-4bac-b840-69f2ae92205c",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.1-8b-instant",
+        "options": {
+          "maxTokensToSample": 4096,
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        200,
+        500
+      ],
+      "id": "0cd42c46-ccba-4ae5-b0d3-643dc17b9008",
+      "name": "Groq Chat Model"
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "import json\nimport hashlib\nfrom datetime import datetime\n\noutput = []\n\n# Fetch data from previous nodes\noriginal_papers = _('Code openalex Api').all()\nllm_results = _input.all()\n\ncurrent_year = datetime.now().year\n\nfor orig_item, llm_item in zip(original_papers, llm_results):\n    orig_data = orig_item.json\n    llm_raw_text = llm_item.json.get('text', '{}').strip()\n    \n    parsed_llm = {}\n    try:\n        start_idx = llm_raw_text.find('{')\n        end_idx = llm_raw_text.rfind('}')\n        if start_idx != -1 and end_idx != -1:\n            parsed_llm = json.loads(llm_raw_text[start_idx:end_idx+1])\n        else:\n            parsed_llm = json.loads(llm_raw_text)\n    except Exception:\n        parsed_llm = {}\n        \n    category = parsed_llm.get('category') or parsed_llm.get('Category') or 'N/A'\n    core_claim = parsed_llm.get('core_claim') or parsed_llm.get('Core_Claim') or 'N/A'\n    verdict = parsed_llm.get('verdict') or parsed_llm.get('Verdict') or 'insufficient_evidence'\n    verdict_summary = parsed_llm.get('verdict_summary') or parsed_llm.get('Verdict_Summary') or 'N/A'\n    \n    # Extract Epistemic Certainty from LLM\n    confidence_val = parsed_llm.get('extraction_confidence') or parsed_llm.get('Extraction_Confidence') or 0.50\n    try:\n        extraction_confidence = float(confidence_val)\n    except Exception:\n        extraction_confidence = 0.50\n\n    if verdict not in ['supported', 'refuted', 'mixed', 'insufficient_evidence']:\n        verdict = 'insufficient_evidence'\n\n    citations = int(orig_data.get(\"Citations\", 0))\n    pub_year = orig_data.get(\"Publication_Year\")\n    year_int = int(pub_year) if str(pub_year).isdigit() else current_year\n    is_oa = orig_data.get(\"Is_OA\", False)\n\n    # --- ADVANCED ACADEMIC WEIGHTING ENGINE v4.0 ---\n    \n    # 1. Citation Velocity Score (Max 35 points)\n    paper_age = (current_year - year_int) + 1\n    velocity = citations / paper_age\n    velocity_score = min(35, int((velocity / 15) * 5)) if velocity > 0 else 0\n    if velocity > 150: velocity_score = 35\n        \n    # 2. Epistemic Certainty Score (Max 35 points)\n    certainty_score = int(extraction_confidence * 35)\n    \n    # 3. Open Access Transparency Bonus (Max 15 points)\n    oa_score = 15 if is_oa else 0\n    \n    # 4. Pure Recency Score (Max 15 points)\n    recency_score = min(15, max(0, (year_int - 2000) // 2))\n    \n    # Compile aggregate reliability metric bounded securely at [0, 100]\n    reliability_score = min(100, max(0, velocity_score + certainty_score + oa_score + recency_score))\n\n    # Deduplication and SQL protection\n    url_to_hash = orig_data.get(\"OpenAlex_URL\", \"\") or orig_data.get(\"Title\", \"N/A\")\n    content_hash = hashlib.sha256(url_to_hash.encode('utf-8')).hexdigest()\n        \n    def clean_sql(text):\n        return str(text).replace(\"'\", \"''\") if text else \"N/A\"\n\n    final_record = {\n        \"Title\": clean_sql(orig_data.get(\"Title\")),\n        \"Publication_Year\": year_int,\n        \"Domain\": clean_sql(orig_data.get(\"Domain\")),\n        \"Keywords\": clean_sql(orig_data.get(\"Keywords\")),\n        \"Category\": clean_sql(category),\n        \"Core_Claim\": clean_sql(core_claim),\n        \"Extraction_Confidence\": round(extraction_confidence, 2),  # Fixed: Changed '--' to '#'\n        \"Verdict\": verdict,\n        \"Reliability_Score\": reliability_score,\n        \"Verdict_Summary\": clean_sql(verdict_summary),\n        \"Abstract\": clean_sql(orig_data.get(\"Abstract\")),\n        \"Authors\": clean_sql(orig_data.get(\"Authors\")),\n        \"Citations\": citations,\n        \"DOI\": clean_sql(orig_data.get(\"DOI\")),\n        \"URL\": clean_sql(orig_data.get(\"OpenAlex_URL\")),\n        \"Content_Hash\": content_hash\n    }\n    output.append(final_record)\n\nreturn output"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        240
+      ],
+      "id": "d73bde71-2728-4343-8db4-07234b902fbb",
+      "name": "Code1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH inserted_article AS (\n    INSERT INTO sovereign_pipeline.articles (\n        source_identifier, title, publication_year, scientific_domain, keywords,\n        citations_count, authors, abstract, doi, canonical_url, content_hash,\n        metadata, current_status\n    )\n    VALUES (\n        'openalex',\n        '{{ $json.Title }}',\n        {{ $json.Publication_Year }},\n        '{{ $json.Domain }}',\n        '{{ $json.Keywords }}',\n        {{ $json.Citations }},\n        '{{ $json.Authors }}',\n        '{{ $json.Abstract }}',\n        '{{ $json.DOI }}',\n        '{{ $json.URL }}',\n        '{{ $json.Content_Hash }}',\n        jsonb_build_object(\n            'source', 'openalex',\n            'domain', '{{ $json.Domain }}',\n            'keywords', '{{ $json.Keywords }}',\n            'doi', '{{ $json.DOI }}',\n            'openalex_url', '{{ $json.URL }}'\n        ),\n        'finalized'\n    )\n    ON CONFLICT (content_hash)\n    DO UPDATE SET\n        citations_count = EXCLUDED.citations_count,\n        scientific_domain = EXCLUDED.scientific_domain,\n        keywords = EXCLUDED.keywords,\n        metadata = EXCLUDED.metadata,\n        current_status = 'finalized',\n        updated_at = NOW()\n    RETURNING id\n),\ninserted_claim AS (\n    INSERT INTO sovereign_pipeline.claims (\n        article_id, statement, category, extraction_model, extraction_confidence\n    )\n    SELECT\n        id,\n        '{{ $json.Core_Claim }}',\n        '{{ $json.Category }}',\n        'llama-3.1-8b-instant',\n        {{ $json.Extraction_Confidence }}\n    FROM inserted_article\n    ON CONFLICT (article_id, statement)\n    DO UPDATE SET\n        category = EXCLUDED.category,\n        extraction_confidence = EXCLUDED.extraction_confidence\n    RETURNING id\n)\nINSERT INTO sovereign_pipeline.verifications (\n    claim_id, verdict, reliability_score, verdict_summary,\n    supporting_evidence, verification_model, execution_time_ms\n)\nSELECT\n    id,\n    '{{ $json.Verdict }}',\n    {{ $json.Reliability_Score }},\n    '{{ $json.Verdict_Summary }}',\n    jsonb_build_array(\n        jsonb_build_object(\n            'title', '{{ $json.Title }}',\n            'doi', '{{ $json.DOI }}',\n            'url', '{{ $json.URL }}',\n            'citations', {{ $json.Citations }},\n            'publication_year', {{ $json.Publication_Year }}\n        )\n    ),\n    'llama-3.1-8b-instant',\n    120\nFROM inserted_claim\nON CONFLICT (claim_id, verification_model)\nDO UPDATE SET\n    verdict = EXCLUDED.verdict,\n    reliability_score = EXCLUDED.reliability_score,\n    verdict_summary = EXCLUDED.verdict_summary,\n    supporting_evidence = EXCLUDED.supporting_evidence,\n    execution_time_ms = EXCLUDED.execution_time_ms,\n    verified_at = NOW()\nRETURNING id;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        680,
+        240
+      ],
+      "id": "d2147a9f-af0c-4399-959e-6d96efd49d94",
+      "name": "Postgres"
+    },
+    {
+      "parameters": {
+        "language": "python",
+        "pythonCode": "from typing import Dict, List, Any, Optional\nfrom itertools import chain\n\ndef rebuild_abstract(inverted_index: Optional[Dict[str, List[int]]]) -> str:\n    if not inverted_index:\n        return \"N/A\"\n    all_indices = list(chain.from_iterable(inverted_index.values()))\n    if not all_indices:\n        return \"N/A\"\n    max_idx = max(all_indices)\n    reconstructed: List[Optional[str]] = [None] * (max_idx + 1)\n    for word, positions in inverted_index.items():\n        for pos in positions:\n            reconstructed[pos] = word\n    return \" \".join(filter(None, reconstructed))\n\noutput: List[Dict[str, Any]] = []\n\nfor item in _input.all():\n    results = item.json.get('results', [])\n    \n    for paper in results:\n        abstract = rebuild_abstract(paper.get('abstract_inverted_index'))\n        \n        authors = [a.get('author', {}).get('display_name') for a in paper.get('authorships', []) if a.get('author', {}).get('display_name')]\n        authors_str = \", \".join(authors) if authors else \"Unknown\"\n\n        # Extract Domain\n        domain = paper.get('primary_topic', {}).get('domain', {}).get('display_name', 'Unknown')\n        \n        # Extract top 5 Keywords\n        keywords_list = paper.get('keywords', [])\n        keywords = [kw.get('display_name') for kw in keywords_list if kw.get('display_name')][:5]\n        keywords_str = \", \".join(keywords) if keywords else \"N/A\"\n\n        # Extract Open Access status (New Feature!)\n        is_oa = paper.get('open_access', {}).get('is_oa', False)\n\n        clean_paper = {\n            \"Title\": paper.get(\"title\", \"Untitled Work\"),\n            \"Publication_Year\": paper.get(\"publication_year\", \"N/A\"),\n            \"Domain\": domain,\n            \"Keywords\": keywords_str,\n            \"Citations\": paper.get(\"cited_by_count\", 0),\n            \"Authors\": authors_str,\n            \"Abstract\": abstract,\n            \"DOI\": paper.get(\"doi\", \"\"),\n            \"OpenAlex_URL\": paper.get(\"id\", \"\"),\n            \"Is_OA\": is_oa  # Fixed: Changed SQL comment '--' to Python comment '#'\n        }\n        output.append(clean_paper)\n\nreturn output"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -180,
+        240
+      ],
+      "id": "77533c10-5589-4c9f-b8a4-18340f972972",
+      "name": "Code openalex Api",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "verify-claim",
+        "responseMode": "lastNode",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1020,
+        240
+      ],
+      "id": "95b60a79-bcd0-486f-bc1b-1a3c37a3eab6",
+      "name": "Webhook",
+      "webhookId": "2c537fc3-f60e-49d0-b414-ba5da7f60b43"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.claim }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=Extract the core scientific search query from this user input. \nReturn ONLY a concise 3-word phrase optimized for OpenAlex API title search.\n\nUser Input: {{ $json.body.claim }}"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -780,
+        240
+      ],
+      "id": "b7dfdd7a-6202-4419-a44c-cf451dd2693d",
+      "name": "Basic LLM Chain2"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.1-8b-instant",
+        "options": {
+          "maxTokensToSample": 4096,
+          "temperature": 0.7
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -780,
+        440
+      ],
+      "id": "3b4748e8-9870-4e08-9b20-6acb449d8f21",
+      "name": "Groq Chat Model2"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "openalex Api": {
+      "main": [
+        [
+          {
+            "node": "Code openalex Api",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code1": {
+      "main": [
+        [
+          {
+            "node": "Postgres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code openalex Api": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain2",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain2": {
+      "main": [
+        [
+          {
+            "node": "openalex Api",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

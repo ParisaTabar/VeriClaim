@@ -3,20 +3,47 @@
 *.log
 docker-compose.override.yml
 
-# Databases & Volumes
-/postgres_data/
-/n8n_data/
-.env
+# Databases & Docker volumes
+postgres_data/
+n8n_data/
+streamlit_data/
+*.db
 
-# Python & Environment
-__pycache__/
-*.pyc
+# Local environment and secrets
+.env
 .venv/
 env/
 venv/
-.pytest_cache/
+.streamlit/secrets.toml
+credentials/
+secrets/
+*.key
+*.pem
 
-# OS/IDE Files
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+
+# Local backups and patch archives
+backups/
+*.backup
+*.backup.*
+*.backup.py
+*backup*.yaml
+*.zip
+
+# Disabled commercial/SaaS pages for academic demo
+pages/02_auth.py
+pages/07_api_portal.py
+pages/08_settings.py
+pages/09_billing.py
+pages/10_admin.py
+README_academic_skeleton.md
+
+# OS/IDE files
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/

@@ -1,18 +1,87 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: vericlaim_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vericlaim_db}
+      POSTGRES_USER: ${POSTGRES_USER:-vericlaim_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vericlaim_pass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/sql/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vericlaim_user} -d ${POSTGRES_DB:-vericlaim_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   n8n:
-    build: .
+    build:
+      context: .
+      dockerfile: infrastructure/docker/n8n.Dockerfile
     container_name: vericlaim_n8n
-    restart: always
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "5678:5678"
     environment:
-      - N8N_HOST=localhost
-      - NODE_ENV=production
-      - PYTHON_EXECUTABLE=/usr/bin/python3
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      NODE_ENV: production
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL_PUBLIC:-http://localhost:5678/}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change_me_32_chars_minimum_demo_key}
+      PYTHON_EXECUTABLE: /usr/bin/python3
+      OPENALEX_MAILTO: ${OPENALEX_MAILTO:-your.email@example.com}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Europe/Berlin}
+      TZ: ${TZ:-Europe/Berlin}
     volumes:
       - n8n_data:/home/node/.n8n
 
+  streamlit:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/streamlit.Dockerfile
+    container_name: vericlaim_streamlit
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      n8n:
+        condition: service_started
+    ports:
+      - "8501:8501"
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-vericlaim_db}
+      POSTGRES_USER: ${POSTGRES_USER:-vericlaim_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vericlaim_pass}
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/verify-claim
+      VERICLAIM_MODEL_NAME: ${VERICLAIM_MODEL_NAME:-llama-3.1-8b-instant}
+      VERICLAIM_MODE: academic-demo
+    volumes:
+      - .:/app
+
+  adminer:
+    image: adminer:latest
+    container_name: vericlaim_adminer
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    profiles:
+      - debug
+
 volumes:
+  postgres_data:
   n8n_data:
